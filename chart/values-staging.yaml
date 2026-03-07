@@ -1,0 +1,4 @@
+replicaCount: 1
+ingress:
+  enabled: true
+  host: sample.staging.example.internal

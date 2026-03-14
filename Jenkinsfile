@@ -15,22 +15,43 @@ pipeline {
   }
 
   stages {
-    stage('Test') {
-      steps { sh 'python3 -m unittest discover -s app/tests' }
-    }
-
-    stage('Lint chart') {
-      steps { sh 'helm lint chart' }
+    stage('Verify') {
+      // Independent checks run in parallel to shorten the path to feedback.
+      parallel {
+        stage('Unit tests') {
+          steps { sh 'python3 -I -m unittest discover -s app/tests' }
+        }
+        stage('Lint chart') {
+          steps {
+            sh 'helm lint chart -f chart/values-staging.yaml'
+            sh 'helm lint chart -f chart/values-prod.yaml'
+          }
+        }
+        stage('Shell scripts') {
+          steps { sh 'shellcheck scripts/*.sh' }
+        }
+      }
     }
 
     stage('Build image') {
-      steps { sh 'docker build -t $IMAGE:$TAG .' }
+      steps {
+        sh '''docker build -t $IMAGE:$TAG \
+                --build-arg APP_VERSION=$TAG --build-arg VCS_REF=$GIT_COMMIT .'''
+      }
     }
 
-    stage('Scan image') {
-      steps {
-        // Gate: fail on HIGH/CRITICAL findings.
-        sh 'trivy image --severity HIGH,CRITICAL --exit-code 1 --no-progress $IMAGE:$TAG'
+    stage('Scan and SBOM') {
+      parallel {
+        stage('Vulnerability gate') {
+          // Fail on HIGH/CRITICAL findings that have a fix available.
+          steps { sh 'trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress $IMAGE:$TAG' }
+        }
+        stage('SBOM') {
+          steps {
+            sh 'trivy image --format cyclonedx --output sbom-${TAG}.cdx.json $IMAGE:$TAG'
+            archiveArtifacts artifacts: 'sbom-*.cdx.json', fingerprint: true
+          }
+        }
       }
     }
 
@@ -59,7 +80,7 @@ pipeline {
       when { branch 'main' }
       steps {
         timeout(time: 1, unit: 'HOURS') {
-          input message: "Deploy ${TAG} to production?", ok: 'Deploy'
+          input message: "Deploy ${TAG} to production?", ok: 'Deploy', submitter: 'release-managers'
         }
       }
     }
@@ -76,7 +97,8 @@ pipeline {
   }
 
   post {
+    success { slackSend channel: '#deploys', color: 'good',    message: "OK ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.TAG}) ${env.BUILD_URL}" }
+    failure { slackSend channel: '#deploys', color: 'danger',  message: "FAILED ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.TAG}) ${env.BUILD_URL}" }
     always  { sh 'docker image rm $IMAGE:$TAG || true' }
-    failure { echo 'Pipeline failed - see the failing stage above.' }
   }
 }

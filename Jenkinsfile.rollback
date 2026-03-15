@@ -1,0 +1,29 @@
+// Parameterised job: roll a release back to a previous Helm revision.
+pipeline {
+  agent any
+
+  parameters {
+    choice(name: 'ENVIRONMENT', choices: ['staging', 'prod'], description: 'Target environment')
+    string(name: 'REVISION', defaultValue: '', description: 'Helm revision (empty = previous)')
+  }
+
+  options { timeout(time: 10, unit: 'MINUTES') }
+
+  stages {
+    stage('Confirm') {
+      when { expression { params.ENVIRONMENT == 'prod' } }
+      steps {
+        input message: "Roll back PRODUCTION to revision '${params.REVISION ?: 'previous'}'?",
+              ok: 'Roll back', submitter: 'release-managers'
+      }
+    }
+    stage('Rollback') {
+      steps {
+        withCredentials([file(credentialsId: "kubeconfig-${params.ENVIRONMENT}", variable: 'KUBECONFIG')]) {
+          sh "scripts/rollback.sh ${params.ENVIRONMENT} ${params.REVISION}"
+          sh "scripts/smoke-test.sh ${params.ENVIRONMENT}"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: python3 -I -m unittest discover -s app/tests
+      - run: make lint
+      - run: docker build -t sample:ci --build-arg APP_VERSION=ci .
+      - uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: sample:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
